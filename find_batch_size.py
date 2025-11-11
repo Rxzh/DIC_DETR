@@ -29,17 +29,6 @@ def check_max_batch_size():
         print("CUDA not available. This script requires a GPU.")
         sys.exit(1)
 
-
-    print("Creating training dataset...")
-    train_dir = config.DATA_DIR / "train"
-    train_dataset = PreGeneratedRadonDataset(
-        data_dir=train_dir,
-        processor=processor,
-        box_width=config.BOX_WIDTH_PX,  
-        box_height=config.BOX_HEIGHT_PX,
-        class_id=config.CLASS_ID
-    )
-
     device = torch.device("cuda")
     print(f"Testing on: {torch.cuda.get_device_name(device)}")
 
@@ -51,6 +40,18 @@ def check_max_batch_size():
         print(f"Error loading model: {e}")
         print("Please ensure you have an internet connection and 'transformers' is installed.")
         sys.exit(1)
+
+
+    print("Creating training dataset...")
+    train_dir = config.DATA_DIR / "train"
+    train_dataset = PreGeneratedRadonDataset(
+        data_dir=train_dir,
+        processor=processor,
+        box_width=config.BOX_WIDTH_PX,  
+        box_height=config.BOX_HEIGHT_PX,
+        class_id=config.CLASS_ID
+    )
+
         
     model.to(device)
     model.train() # Set to train mode
