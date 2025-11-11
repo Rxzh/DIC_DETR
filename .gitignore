@@ -9,3 +9,5 @@ __pycache__/
 *__MACOSX/
 .vscode/
 *.ipynb_checkpoints
+*.err
+*.out
