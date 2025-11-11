@@ -17,6 +17,23 @@ from PIL import Image
 import warnings
 from train import *
 
+def move_batch_to_device(batch,device='mps'):
+    
+    assert device in ['cpu', 'gpu', 'cuda', 'mps']
+
+    labels_on_device = []
+
+    for label in batch['labels']:
+        new_label = {'boxes':label['boxes'].to(torch.device(device)),
+                    'class_labels':label['class_labels'].to(torch.device(device))}
+        labels_on_device.append(new_label)
+
+
+    batch['pixel_values'] = batch['pixel_values'].to(torch.device(device))
+    batch['pixel_mask'] = batch['pixel_mask'].to(torch.device(device))
+    batch['labels'] = labels_on_device
+    return batch
+
 
 MODEL_PATH = Path("pretrained_weights/facebook-detr-resnet-50") 
 
@@ -80,7 +97,7 @@ def check_max_batch_size():
             batch = next(iter(train_dataloader))
             
             # Move batch to GPU
-            batch = {k: v.to(device) for k, v in batch.items()}
+            batch = move_batch_to_device(batch, device='cuda')
 
             outputs = model(**batch)
             loss = outputs['loss']
