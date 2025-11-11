@@ -1,7 +1,3 @@
-# train.py
-# Main training script
-# Now reads from the pre-generated dataset.
-
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
@@ -11,14 +7,11 @@ from PIL import Image
 import warnings
 from time import time
 from pathlib import Path
-
-# Import the shared configuration
 from config import config
 
 warnings.filterwarnings("ignore", category=UserWarning, module='skimage')
 
 
-# --- 1. New Dataset Definition ---
 
 class PreGeneratedRadonDataset(Dataset):
     """
@@ -54,22 +47,15 @@ class PreGeneratedRadonDataset(Dataset):
         return len(self.file_list)
 
     def __getitem__(self, idx):
-        # 1. Get the file path
         file_path = self.file_list[idx]
-        
-        # 2. Load the data from the .npz file
-        # Use 'with' to ensure the file is closed properly
         with np.load(file_path) as data:
-            r_image = data['r_image']   # Shape (H, W, 1)
-            peak_map = data['peak_map'] # Shape (H, W, 1)
+            r_image = data['r_image']   # (H, W, 1)
+            peak_map = data['peak_map'] # (H, W, 1)
 
-        # 3. Convert image to PIL RGB format
-        # (This is identical to your old dataset's logic)
         r_image_norm = (r_image.squeeze() * 255).astype(np.uint8)
         pil_image = Image.fromarray(r_image_norm, mode='L').convert("RGB")
         
-        # 4. Convert peak_map to DETR target format
-        # (This is identical to your old dataset's logic)
+        # Convert peak_map to DETR target format
         rho_indices, theta_indices = np.where(peak_map.squeeze() > 0)
         
         boxes = []
@@ -93,26 +79,19 @@ class PreGeneratedRadonDataset(Dataset):
             boxes.append([center_x, center_y, width, height])
             class_labels.append(self.class_id)
 
-        # 5. Pre-process the image
-        # (This is identical to your old dataset's logic)
         encoding = self.processor(images=pil_image, return_tensors="pt")
         pixel_values = encoding["pixel_values"].squeeze() 
         
-        # 6. Create the final target dictionary
-        # (This is identical to your old dataset's logic)
         target = {
             'boxes': torch.tensor(boxes, dtype=torch.float32),
             'class_labels': torch.tensor(class_labels, dtype=torch.int64)
         }
-        
-        # The output format is *exactly* the same as before
+
         return pixel_values, target
 
-# --- 2. Collate Function (Unchanged) ---
 
 def collate_fn(batch):
     pixel_values = [item[0] for item in batch]
-    # We still need the processor here to pad the batched tensors
     encoding = processor.pad(pixel_values, return_tensors="pt")
     
     labels = [item[1] for item in batch] 
@@ -123,10 +102,10 @@ def collate_fn(batch):
     batch['labels'] = labels
     return batch
 
-# --- 3. Main Data Loading Setup ---
+
 
 print(f"Loading processor: {config.PROCESSOR_NAME}")
-# Define 'processor' globally so collate_fn can access it
+# Define 'processor' globally so collate_fn can access it #TODO change that
 processor = DetrImageProcessor.from_pretrained(config.PROCESSOR_NAME)
 
 print("Creating training dataset...")
@@ -167,8 +146,6 @@ val_dataloader = DataLoader(
 )
 
 print("\nData loading pipeline successfully created.")
-
-# --- 4. Test Block (Unchanged) ---
 
 if __name__ == '__main__':
 

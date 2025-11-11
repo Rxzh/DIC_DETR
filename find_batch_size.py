@@ -22,6 +22,7 @@ from train import *
 MODEL_PATH = Path("pretrained_weights/facebook-detr-resnet-50") 
 
 
+
 def check_max_batch_size():
 
     if not torch.cuda.is_available():
