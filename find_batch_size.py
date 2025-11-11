@@ -5,20 +5,39 @@ import sys
 from pathlib import Path
 
 
-TEST_IMAGE_H = 800 
-TEST_IMAGE_W = 800 
 
+import numpy as np
+import matplotlib.pyplot as plt
+from skimage.draw import line
+from skimage.transform import radon
+import torch
+from torch.utils.data import Dataset, DataLoader
+from transformers import DetrImageProcessor
+from PIL import Image
+import warnings
+from time import time
+from train import *
 
-# Number of boxes/labels to simulate per image.
-NUM_DUMMY_BOXES = 100
 
 MODEL_PATH = Path("pretrained_weights/facebook-detr-resnet-50") 
 
 
 def check_max_batch_size():
+
     if not torch.cuda.is_available():
         print("CUDA not available. This script requires a GPU.")
         sys.exit(1)
+
+
+    print("Creating training dataset...")
+    train_dir = config.DATA_DIR / "train"
+    train_dataset = PreGeneratedRadonDataset(
+        data_dir=train_dir,
+        processor=processor,
+        box_width=config.BOX_WIDTH_PX,  
+        box_height=config.BOX_HEIGHT_PX,
+        class_id=config.CLASS_ID
+    )
 
     device = torch.device("cuda")
     print(f"Testing on: {torch.cuda.get_device_name(device)}")
@@ -47,33 +66,21 @@ def check_max_batch_size():
 
         try:
 
-            # Create B dummy images (list of tensors)
-            # Using tensors is easier here.
-            dummy_images = [
-                torch.rand(3, TEST_IMAGE_H, TEST_IMAGE_W) 
-                for _ in range(batch_size)
-            ]
-            
-            # Create B dummy targets
-            # The base DETR model expects COCO classes (0-90)
-            dummy_targets = []
-            for _ in range(batch_size):
-                dummy_targets.append({
-                    'boxes': torch.rand(NUM_DUMMY_BOXES, 4), # [cx, cy, w, h] format
-                    'class_labels': torch.randint(0, 91, (NUM_DUMMY_BOXES,)) 
-                })
-
-            # creates 'pixel_values', 'pixel_mask' and formats labels
-            batch = processor(
-                images=dummy_images, 
-                annotations=dummy_targets, 
-                return_tensors="pt"
+            train_dataloader = DataLoader(
+                train_dataset, 
+                collate_fn=collate_fn, 
+                batch_size=batch_size, 
+                shuffle=False,
+                num_workers=0,
+                pin_memory=False
             )
+
+
+            batch = next(iter(train_dataloader))
             
             # Move batch to GPU
             batch = {k: v.to(device) for k, v in batch.items()}
 
-        
             outputs = model(**batch)
             loss = outputs['loss']
             loss.backward()
