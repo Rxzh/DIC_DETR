@@ -12,21 +12,38 @@ import torch.optim as optim
 from tqdm.auto import tqdm
 from dataset import PreGeneratedRadonDataset, get_collate_fn
 import logging
+import os
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 warnings.filterwarnings("ignore", category=UserWarning, module='skimage')
 
+def setup_ddp():
+    """Initializes the distributed process group."""
+    dist.init_process_group(backend="nccl")
+    rank = int(os.environ["RANK"])
+    local_rank = int(os.environ["LOCAL_RANK"])
+    device = torch.device(f"cuda:{local_rank}")
+    return rank, local_rank, device
+
+def cleanup_ddp():
+    """Destroys the distributed process group."""
+    dist.destroy_process_group()
+
 class Trainer:
-    def __init__(self, model, train_dataloader, val_dataloader, device, optimizer,num_epochs=1, save_dir=None, save_interval=1,logger=None, logfile=None):
-        self.model = model
+    def __init__(self, model, train_dataloader, val_dataloader, device, rank, optimizer, num_epochs=1, save_dir=None, save_interval=1, logger=None, logfile=None):
+        self.model = model  # Note: model is already DDP-wrapped and on the correct device
         self.train_dataloader = train_dataloader
         self.val_dataloader = val_dataloader
         self.device = device
+        self.rank = rank
         self.optimizer = optimizer
         self.num_epochs = num_epochs
-        self.model.to(self.device)
+        # self.model.to(self.device) # This is done before DDP wrapping
         self.save_dir = save_dir
         self.save_interval = save_interval
         self.logger = logger
@@ -35,27 +52,31 @@ class Trainer:
 
     def train(self):
         for epoch in range(self.num_epochs):
+            self.train_dataloader.sampler.set_epoch(epoch)
             train_loss = self.train_one_epoch(epoch)
             val_loss = self.validate_one_epoch(epoch)
-            if self.logger:
-                self.logger.info(f"Epoch {epoch+1}/{self.num_epochs} - Train Loss: {train_loss:.4f} - Val Loss: {val_loss:.4f}")
-            else:
-                print(f"Epoch {epoch+1}/{self.num_epochs} - Train Loss: {train_loss:.4f} - Val Loss: {val_loss:.4f}")
 
-            # Log to CSV file if specified
-            if self.logfile:
-                with open(self.logfile, 'a') as f:
-                    if epoch == 0:
-                        f.write("epoch,train_loss,val_loss\n")
-                    f.write(f"{epoch+1},{train_loss},{val_loss}\n")
-
-            if self.save_dir and (epoch + 1) % self.save_interval == 0:
-                save_path = Path(self.save_dir) / f"model_epoch_{epoch+1}.pt"
-                torch.save(self.model.state_dict(), save_path)
+            if self.rank == 0:
                 if self.logger:
-                    self.logger.info(f"Saved model checkpoint to {save_path}")
+                    self.logger.info(f"Epoch {epoch+1}/{self.num_epochs} - Train Loss: {train_loss:.4f} - Val Loss: {val_loss:.4f}")
                 else:
-                    print(f"Saved model checkpoint to {save_path}")
+                    print(f"Epoch {epoch+1}/{self.num_epochs} - Train Loss: {train_loss:.4f} - Val Loss: {val_loss:.4f}")
+
+                # Log to CSV file if specified
+                if self.logfile:
+                    with open(self.logfile, 'a') as f:
+                        if epoch == 0:
+                            f.write("epoch,train_loss,val_loss\n")
+                        f.write(f"{epoch+1},{train_loss},{val_loss}\n")
+
+                if self.save_dir and (epoch + 1) % self.save_interval == 0:
+                    save_path = Path(self.save_dir) / f"model_epoch_{epoch+1}.pt"
+                    # Save the unwrapped model's state_dict
+                    torch.save(self.model.module.state_dict(), save_path)
+                    if self.logger:
+                        self.logger.info(f"Saved model checkpoint to {save_path}")
+                    else:
+                        print(f"Saved model checkpoint to {save_path}")
 
     def train_one_step(self, batch):
         pixel_values = batch['pixel_values'].to(self.device)
@@ -70,7 +91,7 @@ class Trainer:
         
         loss = outputs.loss
         self.optimizer.zero_grad()
-        loss.backward()
+        loss.backward() # DDP handles gradient synchronization
         self.optimizer.step()
         return loss.item()
 
@@ -91,37 +112,68 @@ class Trainer:
     def train_one_epoch(self,epoch):
         self.model.train()
         train_loss = 0.0
-        train_loop = tqdm(self.train_dataloader, desc=f"Epoch {epoch+1}/{self.num_epochs} [Train]")
+        
+        # Only show progress bar on rank 0
+        train_loop = self.train_dataloader
+        if self.rank == 0:
+            train_loop = tqdm(self.train_dataloader, desc=f"Epoch {epoch+1}/{self.num_epochs} [Train]")
+        
         for batch in train_loop:
             loss = self.train_one_step(batch)
-
             train_loss += loss
-            train_loop.set_postfix(loss=loss)
+            
+            if self.rank == 0:
+                train_loop.set_postfix(loss=loss)
 
-        avg_train_loss = train_loss / len(train_dataloader)
-        return avg_train_loss
-        #print(f"Epoch {epoch+1} - Average Training Loss: {avg_train_loss:.4f}")
-
+        # Average loss for this process
+        avg_train_loss = train_loss / len(self.train_dataloader)
+        
+        # Aggregate losses from all processes
+        loss_tensor = torch.tensor(avg_train_loss, device=self.device)
+        dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
+        
+        # Get the global average by dividing by world size
+        global_avg_train_loss = loss_tensor.item() / dist.get_world_size()
+        
+        return global_avg_train_loss
 
     def validate_one_epoch(self,epoch):
         self.model.eval()
         val_loss = 0.0
+        
+        # Only show progress bar on rank 0 (optional, but consistent)
+        val_loop = self.val_dataloader
+        if self.rank == 0:
+            val_loop = tqdm(self.val_dataloader, desc=f"Epoch {epoch+1}/{self.num_epochs} [Validate]")
+
         with torch.no_grad():
-            for batch in self.val_dataloader:
+            for batch in val_loop:
                 loss = self.validate_one_step(batch)
                 val_loss += loss
+        
+        # Average loss for this process
         avg_val_loss = val_loss / len(self.val_dataloader)
-        return avg_val_loss
-        #print(f"Epoch {epoch+1} - Average Validation Loss: {avg_val_loss:.4f}")
+        
+        # Aggregate losses from all processes
+        loss_tensor = torch.tensor(avg_val_loss, device=self.device)
+        dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
 
+        # Get the global average by dividing by world size
+        global_avg_val_loss = loss_tensor.item() / dist.get_world_size()
 
-if __name__ == "__main__":
-    print(f"Loading processor: {config.PROCESSOR_NAME}")
+        return global_avg_val_loss
+
+def main():
+    rank, local_rank, device = setup_ddp()
+
+    if rank == 0:
+        print(f"Loading processor: {config.PROCESSOR_NAME}")
     processor = DetrImageProcessor.from_pretrained(config.PROCESSOR_NAME)
 
     collate_fn = get_collate_fn(processor)
 
-    print("Creating training dataset...")
+    if rank == 0:
+        print("Creating training dataset...")
     train_dir = config.DATA_DIR / "train"
     train_dataset = PreGeneratedRadonDataset(
         data_dir=train_dir,
@@ -131,7 +183,8 @@ if __name__ == "__main__":
         class_id=config.CLASS_ID
     )
 
-    print("Creating validation dataset...")
+    if rank == 0:
+        print("Creating validation dataset...")
     val_dir = config.DATA_DIR / "val"
     val_dataset = PreGeneratedRadonDataset(
         data_dir=val_dir,
@@ -141,24 +194,33 @@ if __name__ == "__main__":
         class_id=config.CLASS_ID
     )
 
-    print("Creating dataloaders...")
+    if rank == 0:
+        print("Creating distributed samplers and dataloaders...")
+    
+    train_sampler = DistributedSampler(train_dataset, shuffle=True)
+    val_sampler = DistributedSampler(val_dataset, shuffle=False)
+
     train_dataloader = DataLoader(
         train_dataset, 
         collate_fn=collate_fn, 
         batch_size=config.BATCH_SIZE, 
-        shuffle=True,
+        shuffle=False,  # Sampler handles shuffling
         num_workers=config.NUM_WORKERS,
-        pin_memory=True
+        pin_memory=True,
+        sampler=train_sampler
     )
     val_dataloader = DataLoader(
         val_dataset, 
         collate_fn=collate_fn, 
         batch_size=config.BATCH_SIZE,
+        shuffle=False, # Sampler for val
         num_workers=config.NUM_WORKERS, 
-        pin_memory=True
+        pin_memory=True,
+        sampler=val_sampler
     )
 
-    print("\nData loading pipeline successfully created.")
+    if rank == 0:
+        print("\nData loading pipeline successfully created.")
 
     id2label = {0: 'peak'} 
     NUM_LABELS = len(id2label)
@@ -168,16 +230,19 @@ if __name__ == "__main__":
     LR_BACKBONE = 1e-5
     WEIGHT_DECAY = 1e-4
     NUM_EPOCHS = 500
-    #DEVICE = torch.device("cuda")
-    DEVICE = torch.device("cpu")
     PRETRAINED_MODEL_PATH = config.PROCESSOR_NAME
 
     model = DetrForObjectDetection.from_pretrained(
         PRETRAINED_MODEL_PATH,
         revision="no_timm",
         num_labels=NUM_LABELS,
-        ignore_mismatched_sizes=True # This is key to replacing the head
-    ).to(DEVICE)
+        ignore_mismatched_sizes=True 
+    )
+    
+    #move model to device before wrapping
+    model.to(device)
+    
+    model = DDP(model, device_ids=[local_rank])
     
     param_dicts = [
         {
@@ -190,19 +255,35 @@ if __name__ == "__main__":
     ]
     optimizer = optim.AdamW(param_dicts, lr=LR, weight_decay=WEIGHT_DECAY)
 
+    # Only create save_dir on rank 0
+    save_dir = "model_checkpoints"
+    if rank == 0:
+        Path(save_dir).mkdir(exist_ok=True)
+        
     trainer = Trainer(
         model=model,
         train_dataloader=train_dataloader,
         val_dataloader=val_dataloader,
-        device=DEVICE,
+        device=device,
+        rank=rank,
         optimizer=optimizer,
         num_epochs=NUM_EPOCHS,
-        save_dir="model_checkpoints",
+        save_dir=save_dir,
         save_interval=10,
-        logger=logger,
-        logfile="training_logs.csv"
+        logger=logger if rank == 0 else None, # Only log on rank 0
+        logfile="training_logs.csv" if rank == 0 else None # Only write logfile on rank 0
     )
+    
+    if rank == 0:
+        print("Starting DDP training...")
+        
     trainer.train()
 
+    if rank == 0:
+        print("Training complete.")
+        
+    cleanup_ddp()
 
 
+if __name__ == "__main__":
+    main()
