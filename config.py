@@ -21,14 +21,14 @@ class Config:
     # --- Training/Model Params ---
     # These are used by train.py
     BATCH_SIZE = 8
-    NUM_WORKERS = 8
+    NUM_WORKERS = 0
     
     # Box definitions for DETR
     BOX_WIDTH_PX = 9         
     BOX_HEIGHT_PX = 9
     
     # Model/Processor
-    PROCESSOR_NAME = "facebook/detr-resnet-50"
+    PROCESSOR_NAME = "pretrained_weights/facebook-detr-resnet-50"
     
     # Our single class: "peak"
     CLASS_ID = 0 
