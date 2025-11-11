@@ -15,7 +15,6 @@ from torch.utils.data import Dataset, DataLoader
 from transformers import DetrImageProcessor
 from PIL import Image
 import warnings
-from time import time
 from train import *
 
 
