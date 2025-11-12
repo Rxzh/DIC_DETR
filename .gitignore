@@ -17,3 +17,4 @@ __pycache__/
 *pretrained_weights
 model_checkpoints/
 *.zip
+*.tar
