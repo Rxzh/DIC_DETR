@@ -12,3 +12,4 @@ __pycache__/
 *.ipynb_checkpoints
 *.err
 *.out
+pretrained_weights/*
