@@ -20,8 +20,8 @@ class Config:
     
     # --- Training/Model Params ---
     # These are used by train.py
-    BATCH_SIZE = 8
-    NUM_WORKERS = 0
+    BATCH_SIZE = 32
+    NUM_WORKERS = 4
     
     # Box definitions for DETR
     BOX_WIDTH_PX = 9         
