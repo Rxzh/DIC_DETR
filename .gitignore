@@ -13,4 +13,5 @@ __pycache__/
 *.ipynb
 *.err
 *.out
-pretrained_weights/*
+*.safetensors
+*pretrained_weights
