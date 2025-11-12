@@ -10,6 +10,7 @@ __pycache__/
 *__MACOSX/
 .vscode/
 *.ipynb_checkpoints
+*.ipynb
 *.err
 *.out
 pretrained_weights/*
