@@ -15,3 +15,5 @@ __pycache__/
 *.out
 *.safetensors
 *pretrained_weights
+model_checkpoints/
+*.zip
